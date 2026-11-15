@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# No price data in this repository: the Databento licence does not permit redistribution.
+*.parquet
+!results/*.csv
+data/

@@ -1,0 +1,14 @@
+{
+  "candidates": 20192,
+  "rows": 22474,
+  "event": 9998,
+  "invalidated": 8539,
+  "neither": 3937,
+  "no_opposite": 483,
+  "died_outside_episode": 1505,
+  "roll_dropped": 144,
+  "retired": 0,
+  "no_entry_skipped": 1376,
+  "decision_at_cap": 1006,
+  "unresolved_at_data_end": 0
+}

@@ -1,0 +1,16 @@
+[project]
+name = "ict-dol-model"
+version = "1.0.0"
+description = "A concept model that scores ICT draws on liquidity on MGC 1-hour bars"
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26", "pandas>=2.2", "pyarrow>=17"]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "matplotlib>=3.8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
