@@ -1,0 +1,16 @@
+{
+  "research": {
+    "episodes": 162099,
+    "mean_cell_lift": 1.4986911855144482,
+    "brier_skill": 0.07604091399445978,
+    "auc_within_cells": 0.6725380097062807
+  },
+  "chart_visible": {
+    "episodes": 173637,
+    "mean_cell_lift": 1.5007548174163063,
+    "brier_skill": 0.0765826538070572,
+    "auc_within_cells": 0.6730999999521055
+  },
+  "windows_positive": 1.0,
+  "monotone_share": 1.0
+}

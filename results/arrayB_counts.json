@@ -1,0 +1,12 @@
+{
+  "candidates": 213650,
+  "swept": 209240,
+  "episodes": 197202,
+  "never_swept": 4410,
+  "no_entry_skipped": 11038,
+  "decision_at_cap": 745,
+  "roll_dropped": 0,
+  "truncated_at_data_end": 5,
+  "no_opposite": 249,
+  "bad_bar": 1
+}

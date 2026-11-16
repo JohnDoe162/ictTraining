@@ -1,0 +1,12 @@
+{
+  "_comment": "Stage 1 verdict thresholds, registered in writing BEFORE the first run of the array named. Changing any value is a new version of the model, not a new reading of the same one. Array A has no entry: its run happened before this file existed, so its result is a report and not a verdict, and adding thresholds afterwards would be choosing them with the answers already visible.",
+  "array_b": {
+    "min_episodes_total": 500,
+    "min_episodes_per_year": 50,
+    "top_decile_lift": 1.2,
+    "min_brier_skill": 0.0,
+    "min_positive_window_share": 0.5,
+    "min_monotone_share": 0.99,
+    "_baseline": "Every skill figure is measured against the base rate of the individual grid cell, not a single pooled rate. A model that had only learned the shape of the grid would beat a pooled rate without knowing anything about sweeps."
+  }
+}

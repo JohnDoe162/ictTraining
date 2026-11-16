@@ -1,0 +1,483 @@
+//@version=6
+// =====================================================================================
+// ICT Sweep and Reversal - model scored (MGC, 5 minute)
+//
+// A prior 5-minute swing high or low is run: the level is traded through by at least one tick,
+// taking the stops resting there. A touch is not a sweep - that rule is the owner's, not the
+// model's, and it is the rule the model was trained on. At the close of that bar this script scores the question a
+// trader actually asks - does price now come back inside the level, or does it keep going?
+//
+// You choose the two numbers that define "come back" and "keep going", in ATR:
+//   COME BACK BY  (x) - how far back inside the level a 5m bar must CLOSE to count.
+//   HEAT ALLOWED  (y) - how far beyond the sweep's extreme price may run before the idea is
+//                       dead. This is where a stop would sit.
+// The model was trained on the whole grid of both, so neither is a threshold someone picked
+// after seeing results: they are inputs, and moving them re-scores rather than re-fits.
+//
+// WHY IT EXISTS: to confirm the model by eye. The table in the corner tallies, over all loaded
+// chart history, how often each score band actually came back before taking the heat. If the
+// model works, the hit rate rises down the table.
+//
+// WHAT IT IS NOT: not a trade signal, not a strategy, not tested after costs. Execution in this
+// project is NinjaTrader-only. This script places no orders.
+//
+// REQUIREMENTS: 5-minute chart, MGC (Micro Gold). Other symbols or timeframes are untested.
+//
+// IF THE SCRIPT APPEARS IN ITS OWN PANEL: remove the indicator from the chart and add it again.
+// Saving in the Pine Editor updates the code of an instance already on the chart but never moves
+// it between panes. The drawings are pinned to the price pane either way, but the table belongs
+// to whichever pane owns the script and cannot be moved by code.
+//
+// KNOWN CAVEAT, stated rather than hidden: one measurement carries almost all of the ranking -
+// how far back inside the level the sweep bar itself closed. The research model with 20 inputs
+// scores AUC 0.673 out of sample; that single measurement alone scores 0.671. Part of its power
+// is simply that a bar which already closed back inside starts nearer the target.
+// =====================================================================================
+
+indicator("ICT Sweep and Reversal - model scored", "Sweep model", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ------------------------------- inputs ---------------------------------------------
+grpQ = "The question being scored"
+xSel = input.string("0.50", "Come back by (ATR)", options = ["0.10", "0.25", "0.50", "0.75", "1.00", "1.50"], group = grpQ, tooltip = "A 5-minute bar must CLOSE at least this far back inside the swept level. These are the six values the model was trained on.")
+ySel = input.string("1.00", "Heat allowed (ATR)", options = ["0.25", "0.50", "1.00", "2.00", "4.00"], group = grpQ, tooltip = "Price may run this far beyond the sweep's extreme before the idea is dead - where a stop would sit. These are the five values the model was trained on.")
+
+grpD = "Display"
+showAlive    = input.bool(true,  "Show live sweeps",                  group = grpD)
+showResolved = input.bool(true,  "Keep resolved sweeps on the chart", group = grpD)
+minLabel     = input.float(0.60, "Label scores at or above",          minval = 0.0, maxval = 1.0, step = 0.05, group = grpD)
+minDraw      = input.float(0.00, "Draw lines for scores at or above", minval = 0.0, maxval = 1.0, step = 0.05, group = grpD)
+showTable    = input.bool(true,  "Show hit-rate table",               group = grpD)
+theme        = input.string("Auto", "Colour theme", options = ["Auto", "Light", "Dark"], group = grpD, tooltip = "Auto reads the chart background. Set it explicitly if your theme is unusual.")
+tablePos     = input.string("Top right", "Table position", options = ["Top right", "Bottom right", "Bottom left"], group = grpD)
+
+grpM = "Model"
+modelTick  = input.float(0.10, "Tick size the model was fitted on (MGC = 0.10)", minval = 0.0001, step = 0.01, group = grpM, tooltip = "Scales the sweep-depth-in-ticks feature. Leave at 0.10 unless the model is refitted.")
+atrMedLen  = input.int(5520, "Volatility-regime window (5m bars)", minval = 20, maxval = 20000, group = grpM, tooltip = "5520 bars is about 20 trading days, matching the research code. Lower it if the script errors or times out, at the cost of matching the research exactly.")
+maxTracked = input.int(800,  "Maximum candidates held in memory",  minval = 50, maxval = 3000, group = grpM)
+
+xSelV = str.tonumber(xSel)
+ySelV = str.tonumber(ySel)
+
+// ------------------------------- model constants ------------------------------------
+// Logistic regression, L2 (C = 1.0). Each feature is standardised with its own mean and
+// standard deviation, weighted, summed, then passed through the logistic function.
+// Source of every number: reports/pattern_arrays/arrayB_model_pine.json
+C_INT = 0.350863
+// how far past the level the sweep ran, in ATR
+W_01 =     0.055046
+M_01 =     0.641970
+S_01 =     0.715954
+// the same in ticks
+W_02 =    -0.037638
+M_02 =     9.503524
+S_02 =    18.451282
+// how far back inside the level the sweep bar closed (the rejection)
+W_03 =     0.919978
+M_03 =    -0.049113
+S_03 =     0.621482
+// how violent the sweep bar was
+W_04 =     0.000506
+M_04 =     1.564163
+S_04 =     0.999664
+// swing strength: earlier bars the pivot towers over
+W_05 =     0.004840
+M_05 =     8.230304
+S_05 =     7.663094
+// swing strength: sharpness against its two neighbours
+W_06 =     0.007889
+M_06 =     0.310635
+S_06 =     0.285228
+// age of the level, in 5m bars
+W_07 =    -0.002361
+M_07 =   342.805111
+S_07 =  3829.066864
+// approaches that came close but did not break it
+W_08 =     0.003088
+M_08 =     3.531649
+S_08 =     3.954054
+// volatility regime
+W_09 =     0.014464
+M_09 =     1.258652
+S_09 =     0.750688
+// volume of the sweep bar against its recent median
+W_10 =     0.009138
+M_10 =     3.098679
+S_10 =     4.756115
+// room to the opposite swing
+W_11 =     0.012460
+M_11 =     3.038670
+S_11 =     1.546955
+// where the level sits in the session's range
+W_12 =    -0.075412
+M_12 =     0.499431
+S_12 =     0.551711
+// position of price in the recent range
+W_13 =     0.023252
+M_13 =     0.511262
+S_13 =     0.343652
+// minutes left before the 17:00 cap
+W_14 =     0.241034
+M_14 =   698.596880
+S_14 =   381.267659
+// side: +1 swept high, -1 swept low
+W_15 =    -0.023190
+M_15 =    -0.002217
+S_15 =     0.999998
+// London session
+W_16 =     0.122993
+M_16 =     0.321083
+S_16 =     0.466892
+// New York morning
+W_17 =     0.103791
+M_17 =     0.121579
+S_17 =     0.326799
+// New York afternoon
+W_18 =     0.145529
+M_18 =     0.179605
+S_18 =     0.383858
+// GRID INPUT: how far back inside counts
+W_19 =    -0.398095
+M_19 =     0.683333
+S_19 =     0.471405
+// GRID INPUT: how much heat is allowed
+W_20 =     0.587079
+M_20 =     1.550000
+S_20 =     1.363818
+
+STRENGTH_CAP   = 20
+RANGE_BARS     = 20
+TESTS_BAND_ATR = 1.0
+RVOL_BARS      = 20
+CAP_HOUR       = 17
+
+// ------------------------------- colours --------------------------------------------
+// Light and dark are two selected palettes, each checked against its own surface for
+// colour-blind separation and contrast. Dark is not an automatic flip of light.
+bgLum  = 0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color)
+isDark = theme == "Auto" ? bgLum < 128 : theme == "Dark"
+
+C_LOW     = isDark ? color.new(#7a7a74, 20) : color.new(#9a9a94, 20)
+C_HIGH    = isDark ? #3987e5 : #2a78d6
+C_BACK    = isDark ? #199e70 : #1baf7a
+C_HEAT    = isDark ? #d95926 : #eb6834
+C_STALE   = isDark ? color.new(#7a7a74, 55) : color.new(#9a9a94, 55)
+C_SURFACE = isDark ? #1a1a19 : #fcfcfb      // opaque: the table must never show through
+C_INK     = isDark ? #f0efec : #0b0b0b
+C_INK2    = isDark ? #c3c2b7 : #52514e
+C_HEAD    = isDark ? #1e3f66 : #a8c8ee      // table header, opaque
+C_TINT    = isDark ? #17304d : #cfe0f5      // strongest band shade, opaque
+C_FRAME   = isDark ? #3a3a37 : #e4e3df
+
+// ------------------------------- guards ---------------------------------------------
+if barstate.islast and timeframe.period != "5"
+    runtime.error("Put the chart on the 5-minute timeframe. This model was trained on 5m bars only.")
+
+max_bars_back(high, 500)
+max_bars_back(low, 500)
+
+// ------------------------------- session --------------------------------------------
+// A CME trading day runs 18:00 to 17:00 New York. Shifting by 6 hours puts every bar on its own
+// trading day; the exchange calendar handles daylight saving.
+NY = "America/New_York"
+t6 = time + 6 * 60 * 60 * 1000
+sessId = year(t6, NY) * 10000 + month(t6, NY) * 100 + dayofmonth(t6, NY)
+newSession = sessId != sessId[1]
+nyHour = hour(time, NY) + minute(time, NY) / 60.0
+
+// Session buckets as used in training. Asia is the baseline and carries no feature.
+bLondon = nyHour >= 3.0  and nyHour < 9.5  ? 1.0 : 0.0
+bNyAm   = nyHour >= 9.5  and nyHour < 12.0 ? 1.0 : 0.0
+bNyPm   = nyHour >= 12.0 and nyHour < 17.0 ? 1.0 : 0.0
+
+// minutes from this bar's close to 17:00 New York on its own trading day
+capMs    = timestamp(NY, year(t6, NY), month(t6, NY), dayofmonth(t6, NY), CAP_HOUR, 0)
+minsToCap = (capMs - time_close) / 60000.0
+
+// session extremes so far, for the level's rank in the day's range
+var float sessHi = na
+var float sessLo = na
+sessHi := newSession ? high : math.max(nz(sessHi, high), high)
+sessLo := newSession ? low  : math.min(nz(sessLo, low),  low)
+
+// ------------------------------- volatility, range, volume --------------------------
+// Simple mean of true range, matching the research code. NOT Wilder's smoothing.
+atr     = ta.sma(ta.tr(true), 14)
+atrMed  = ta.median(atr, atrMedLen)
+atrNorm = na(atrMed) or atrMed <= 0 ? na : atr / atrMed
+rngHi   = ta.highest(high, RANGE_BARS)
+rngLo   = ta.lowest(low, RANGE_BARS)
+rngPos  = rngHi - rngLo > 0 ? (close - rngLo) / (rngHi - rngLo) : 0.5
+volMed  = ta.median(volume[1], RVOL_BARS)
+
+tick = modelTick
+eps  = tick * 0.01
+
+// ------------------------------- candidate ------------------------------------------
+type Cand
+    float lvl      = na    // the level itself: a pivot high (+1) or pivot low (-1)
+    int   side     = 0
+    int   confBar  = 0     // bar index at which the pivot became knowable
+    float leftStr  = 0.0   // learned swing strength: earlier bars the pivot towers over
+    float prom     = 0.0   // learned swing strength: sharpness, in ATR
+    int   tests    = 0     // approaches within 1 ATR that did not trade through
+    bool  alive    = true  // false once swept: a level is consumed by its sweep
+    bool  epOpen   = false // an episode is running
+    float epScore  = na
+    float sweepExt = na    // the sweep bar's extreme: all heat is measured from here
+    float atrDec   = na    // ATR at the decision, so both grid levels stay in those units
+    int   decBar   = 0
+    line  ln       = na
+    label lb       = na
+
+var array<Cand> cands = array.new<Cand>()
+
+// ------------------------------- tallies --------------------------------------------
+var array<int> bandN   = array.from(0, 0, 0, 0, 0)  // resolved episodes per score band
+var array<int> bandHit = array.from(0, 0, 0, 0, 0)  // of those, came back before the heat
+var int nNeither = 0                                // episodes unresolved at the session cap
+
+bandOf(float s) => s < 0.2 ? 0 : s < 0.4 ? 1 : s < 0.6 ? 2 : s < 0.8 ? 3 : 4
+
+// ------------------------------- the model ------------------------------------------
+scoreOf(float f01, float f02, float f03, float f04, float f05, float f06, float f07,
+         float f08, float f09, float f10, float f11, float f12, float f13, float f14,
+         float f15, float f16, float f17, float f18, float f19, float f20) =>
+    z  = C_INT
+    z += W_01 * (f01 - M_01) / S_01
+    z += W_02 * (f02 - M_02) / S_02
+    z += W_03 * (f03 - M_03) / S_03
+    z += W_04 * (f04 - M_04) / S_04
+    z += W_05 * (f05 - M_05) / S_05
+    z += W_06 * (f06 - M_06) / S_06
+    z += W_07 * (f07 - M_07) / S_07
+    z += W_08 * (f08 - M_08) / S_08
+    z += W_09 * (f09 - M_09) / S_09
+    z += W_10 * (f10 - M_10) / S_10
+    z += W_11 * (f11 - M_11) / S_11
+    z += W_12 * (f12 - M_12) / S_12
+    z += W_13 * (f13 - M_13) / S_13
+    z += W_14 * (f14 - M_14) / S_14
+    z += W_15 * (f15 - M_15) / S_15
+    z += W_16 * (f16 - M_16) / S_16
+    z += W_17 * (f17 - M_17) / S_17
+    z += W_18 * (f18 - M_18) / S_18
+    z += W_19 * (f19 - M_19) / S_19
+    z += W_20 * (f20 - M_20) / S_20
+    1.0 / (1.0 + math.exp(-z))
+
+// A level is swept only when price trades THROUGH it by at least one tick. A touch does not
+// count. This is the owner's rule and it is what the model was trained on.
+tradedThrough(float lvl, int sd) =>
+    sd == 1 ? high >= lvl + tick - eps : low <= lvl - tick + eps
+
+finish(Cand c, color col, string glyph) =>
+    keepLine = showResolved
+    keepLabel = showResolved and not na(c.epScore) and c.epScore >= minLabel
+    if not na(c.ln) and keepLine
+        line.set_x2(c.ln, bar_index)
+        line.set_color(c.ln, col)
+    if not na(c.ln) and not keepLine
+        line.delete(c.ln)
+        c.ln := na
+    if not na(c.lb) and keepLabel
+        label.set_x(c.lb, bar_index)
+        label.set_text(c.lb, glyph + " " + str.tostring(math.round(c.epScore * 100)) + "%")
+        label.set_textcolor(c.lb, col)
+    if not na(c.lb) and not keepLabel
+        label.delete(c.lb)
+        c.lb := na
+
+// =====================================================================================
+// PHASE 0 - the session cap. An episode still running when a new session starts ended as
+//           "neither". The level was already consumed by its sweep, so it does not come back.
+// =====================================================================================
+if newSession and array.size(cands) > 0
+    for i = 0 to array.size(cands) - 1
+        c = array.get(cands, i)
+        if c.epOpen
+            c.epOpen := false
+            nNeither += 1
+            finish(c, C_STALE, "-")
+
+// =====================================================================================
+// PHASE 1 - resolve running episodes on this bar. The heat is checked FIRST, so a bar that
+//           both runs past the stop and closes back inside counts as heat: the worst case for
+//           the trader, because 5-minute bars cannot say which came first.
+// =====================================================================================
+if array.size(cands) > 0
+    for i = 0 to array.size(cands) - 1
+        c = array.get(cands, i)
+        if c.epOpen and c.decBar < bar_index
+            heatLvl = c.side == 1 ? c.sweepExt + ySelV * c.atrDec : c.sweepExt - ySelV * c.atrDec
+            tookHeat = c.side == 1 ? high >= heatLvl - eps : low <= heatLvl + eps
+            backLvl = c.side == 1 ? c.lvl - xSelV * c.atrDec : c.lvl + xSelV * c.atrDec
+            cameBack = c.side == 1 ? close <= backLvl + eps : close >= backLvl - eps
+            if tookHeat or cameBack
+                b = bandOf(c.epScore)
+                array.set(bandN, b, array.get(bandN, b) + 1)
+                if tookHeat
+                    finish(c, C_HEAT, "x")
+                else
+                    array.set(bandHit, b, array.get(bandHit, b) + 1)
+                    finish(c, C_BACK, "ok")
+                c.epOpen := false
+
+// =====================================================================================
+// PHASE 2 - count approaches that came within 1 ATR of a level but did not trade through
+// =====================================================================================
+if array.size(cands) > 0 and not na(atr)
+    for i = 0 to array.size(cands) - 1
+        c = array.get(cands, i)
+        if c.alive and c.confBar < bar_index
+            if c.side == 1 and high >= c.lvl - TESTS_BAND_ATR * atr and high < c.lvl + tick - eps
+                c.tests += 1
+            else if c.side == -1 and low <= c.lvl + TESTS_BAND_ATR * atr and low > c.lvl - tick + eps
+                c.tests += 1
+
+// =====================================================================================
+// PHASE 3 - confirm a new pivot. The floor is the weakest usable swing: a bar whose high is
+//           strictly above the single bar on each side, mirrored for lows; ties disqualify.
+//           Swing STRENGTH is not filtered here - it is measured and fed to the model, which
+//           decides how much it matters. The pivot sits one bar back and can only be known now,
+//           at this bar's close, so nothing here looks ahead.
+// =====================================================================================
+mkCand(int sd) =>
+    lvl = sd == 1 ? high[1] : low[1]
+    k = 0
+    for j = 2 to STRENGTH_CAP + 1
+        if not (sd == 1 ? high[j] < lvl - eps : low[j] > lvl + eps)
+            break
+        k += 1
+    nb = sd == 1 ? math.max(high[2], high[0]) : math.min(low[2], low[0])
+    pr = na(atr[1]) or atr[1] <= 0 ? 0.0 : (sd == 1 ? lvl - nb : nb - lvl) / atr[1]
+    Cand.new(lvl = lvl, side = sd, confBar = bar_index, leftStr = k, prom = pr)
+
+if not na(atr[1]) and bar_index > STRENGTH_CAP + 3
+    if high[1] > high[2] + eps and high[1] > high[0] + eps
+        array.push(cands, mkCand(1))
+    if low[1] < low[2] - eps and low[1] < low[0] - eps
+        array.push(cands, mkCand(-1))
+
+// Drop candidates that can never matter again: swept, with no episode still running.
+if array.size(cands) > 0
+    for i = array.size(cands) - 1 to 0
+        c = array.get(cands, i)
+        if not c.alive and not c.epOpen
+            array.remove(cands, i)
+while array.size(cands) > maxTracked
+    old = array.shift(cands)
+    line.delete(old.ln)
+    label.delete(old.lb)
+
+// =====================================================================================
+// PHASE 4 - the decision. A level swept on THIS bar is scored at this bar's close, once, and
+//           the level is consumed either way. The opposite-side reference is the most recent
+//           living pivot on the other side, which is what the research code uses.
+// =====================================================================================
+float refHi = na
+float refLo = na
+if array.size(cands) > 0
+    for i = array.size(cands) - 1 to 0
+        c = array.get(cands, i)
+        if c.alive
+            if c.side == 1 and na(refHi)
+                refHi := c.lvl
+            if c.side == -1 and na(refLo)
+                refLo := c.lvl
+
+if not na(atrNorm) and not na(atr) and atr > 0 and not na(volMed) and array.size(cands) > 0
+    for i = 0 to array.size(cands) - 1
+        c = array.get(cands, i)
+        if c.alive and c.confBar < bar_index and tradedThrough(c.lvl, c.side)
+            c.alive := false
+            rl = c.side == 1 ? refLo : refHi
+            // the sweep bar's extreme IS the furthest price reached from the first trade through
+            // to this close: the first minute through the level cannot precede the bar's high
+            sx = c.side == 1 ? high : low
+            rng = high - low
+            if not na(rl) and minsToCap > 0
+                depth = (sx - c.lvl) * c.side
+                cbf = rng > 0 ? (c.lvl - close) * c.side / rng : 0.0
+                lrank = sessHi - sessLo > 0 ? (c.lvl - sessLo) / (sessHi - sessLo) : 0.5
+                rvol = volMed > 0 ? volume / volMed : 1.0
+                p = scoreOf(depth / atr, depth / tick, cbf, rng / atr, c.leftStr, c.prom,
+                             bar_index - c.confBar, c.tests, atrNorm, rvol,
+                             math.abs(sx - rl) / atr, lrank, rngPos, minsToCap, c.side,
+                             bLondon, bNyAm, bNyPm, xSelV, ySelV)
+                c.epScore  := p
+                c.sweepExt := sx
+                c.atrDec   := atr
+                c.decBar   := bar_index
+                c.epOpen   := true
+                if showAlive and p >= minDraw
+                    col = color.from_gradient(p, 0.2, 0.9, C_LOW, C_HIGH)
+                    wid = p >= 0.8 ? 3 : p >= 0.6 ? 2 : 1
+                    if na(c.ln)
+                        c.ln := line.new(c.confBar - 1, c.lvl, bar_index, c.lvl,
+                             xloc = xloc.bar_index, color = col, width = wid, force_overlay = true)
+                    if not na(c.ln)
+                        line.set_color(c.ln, col)
+                        line.set_width(c.ln, wid)
+                    if p >= minLabel
+                        txt = str.tostring(math.round(p * 100)) + "%"
+                        if na(c.lb)
+                            c.lb := label.new(bar_index, c.lvl, txt, xloc = xloc.bar_index,
+                                 style = c.side == 1 ? label.style_label_down : label.style_label_up,
+                                 color = color.new(color.white, 100), textcolor = col,
+                                 size = size.small, force_overlay = true)
+                        if not na(c.lb)
+                            label.set_text(c.lb, txt)
+                            label.set_textcolor(c.lb, col)
+
+// stretch live drawings to the current bar
+if array.size(cands) > 0
+    for i = 0 to array.size(cands) - 1
+        c = array.get(cands, i)
+        if c.epOpen and not na(c.ln)
+            line.set_x2(c.ln, bar_index)
+            if not na(c.lb)
+                label.set_x(c.lb, bar_index)
+
+// =====================================================================================
+// PHASE 5 - the confirmation table. Did high scores really come back more often?
+// =====================================================================================
+var table t = table.new(position.top_right, 4, 9, border_width = 1)
+
+if showTable and barstate.islast
+    table.set_position(t, tablePos == "Top right" ? position.top_right : tablePos == "Bottom right" ? position.bottom_right : position.bottom_left)
+    table.set_bgcolor(t, C_SURFACE)
+    table.set_frame_color(t, C_FRAME)
+    table.set_frame_width(t, 1)
+    table.set_border_color(t, C_FRAME)
+    table.cell(t, 0, 0, "Model score", text_color = C_INK, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(t, 1, 0, "Sweeps",      text_color = C_INK, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(t, 2, 0, "Came back",   text_color = C_INK, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(t, 3, 0, "Hit rate",    text_color = C_INK, text_size = size.small, bgcolor = C_HEAD)
+    names = array.from("0-20%", "20-40%", "40-60%", "60-80%", "80-100%")
+    totN = 0
+    totH = 0
+    for b = 0 to 4
+        n = array.get(bandN, b)
+        h = array.get(bandHit, b)
+        totN += n
+        totH += h
+        rate = n > 0 ? str.tostring(math.round(100.0 * h / n)) + "%" : "-"
+        shade = color.from_gradient(b, 0, 4, C_SURFACE, C_TINT)
+        table.cell(t, 0, b + 1, array.get(names, b), text_color = C_INK,  text_size = size.small, bgcolor = shade)
+        table.cell(t, 1, b + 1, str.tostring(n),     text_color = C_INK2, text_size = size.small, bgcolor = shade)
+        table.cell(t, 2, b + 1, str.tostring(h),     text_color = C_INK2, text_size = size.small, bgcolor = shade)
+        table.cell(t, 3, b + 1, rate,                text_color = C_INK,  text_size = size.small, bgcolor = shade)
+    table.cell(t, 0, 6, "All (base rate)",  text_color = C_INK,  text_size = size.small, bgcolor = C_SURFACE)
+    table.cell(t, 1, 6, str.tostring(totN), text_color = C_INK2, text_size = size.small, bgcolor = C_SURFACE)
+    table.cell(t, 2, 6, str.tostring(totH), text_color = C_INK2, text_size = size.small, bgcolor = C_SURFACE)
+    table.cell(t, 3, 6, totN > 0 ? str.tostring(math.round(100.0 * totH / totN)) + "%" : "-", text_color = C_INK, text_size = size.small, bgcolor = C_SURFACE)
+    table.cell(t, 0, 7, "Question: come back " + xSel + " ATR before " + ySel + " ATR of heat",
+         text_color = C_INK, text_size = size.tiny, bgcolor = C_SURFACE)
+    table.cell(t, 1, 7, "", bgcolor = C_SURFACE)
+    table.cell(t, 2, 7, "", bgcolor = C_SURFACE)
+    table.cell(t, 3, 7, "", bgcolor = C_SURFACE)
+    table.cell(t, 0, 8, "Unresolved at the 17:00 cap: " + str.tostring(nNeither) + " (excluded, as in training)",
+         text_color = C_INK2, text_size = size.tiny, bgcolor = C_SURFACE)
+    table.cell(t, 1, 8, "", bgcolor = C_SURFACE)
+    table.cell(t, 2, 8, "", bgcolor = C_SURFACE)
+    table.cell(t, 3, 8, "", bgcolor = C_SURFACE)

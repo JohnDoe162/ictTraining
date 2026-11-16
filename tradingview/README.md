@@ -1,4 +1,17 @@
-# TradingView indicator
+# TradingView indicators
+
+Two scripts, one per array. Both exist to check a model by eye, and neither places orders.
+
+| File | Chart | What it scores |
+|---|---|---|
+| `dol_model_mgc.pine` | MGC, **1 hour** | every live draw on liquidity: will this level be reached? |
+| `sweep_model_mgc.pine` | MGC, **5 minute** | every sweep: will price come back inside before taking heat? |
+
+The Array B script is documented in its own section at the end.
+
+---
+
+## Array A — `dol_model_mgc.pine`
 
 `dol_model_mgc.pine` draws every live draw on liquidity on an MGC 1-hour chart and scores it
 0–100% using the model's own weights. It exists to check the model by eye. It places no orders.
@@ -78,3 +91,82 @@ if any table cell loses its background, or if the drawings stop being pinned to 
 
 If the model is refitted, regenerate the JSON, update the twelve `W_/M_/S_` blocks in the
 `.pine`, and run the tests.
+
+
+---
+
+## Array B — `sweep_model_mgc.pine`
+
+`sweep_model_mgc.pine` marks every 5-minute swing high or low that gets **run** — traded through
+by at least one tick — and scores, at the close of that bar, whether price comes back inside the
+level before running further against you.
+
+### You choose the question
+
+Two dropdowns at the top of the settings:
+
+| Setting | Meaning |
+|---|---|
+| **Come back by (ATR)** | how far back inside the level a 5-minute bar must *close* to count |
+| **Heat allowed (ATR)** | how far beyond the sweep's extreme price may run first — where a stop would sit |
+
+Only the six and five values the model was trained on are offered. Changing either re-scores
+every sweep; it does not refit anything, because both are inputs to the model. This is the whole
+point of Array B: **nobody picked those thresholds**, so you can move them and watch the scores
+and the hit rates move together.
+
+### Loading it
+
+1. Open an **MGC** chart and set the timeframe to **5 minutes**. The script refuses any other
+   timeframe.
+2. Pine Editor → paste `sweep_model_mgc.pine` → Save → Add to chart.
+3. **If the script appears in its own panel, remove the indicator and add it again** — same
+   TradingView quirk as Array A, explained above.
+4. Scroll back. The volatility-regime feature uses a 20-trading-day window of 5-minute bars
+   (5,520 bars); if your browser struggles or the script errors, lower it in the settings, at the
+   cost of matching the research exactly.
+
+### What you see
+
+| On the chart | Meaning |
+|---|---|
+| A horizontal line | A level that has just been swept, with an episode running |
+| Line colour and width | The score. Faint and thin is low, blue and thick is high |
+| `68%` | The model's estimate that price comes back by your chosen amount before taking your chosen heat |
+| `ok 81%` green | It came back first |
+| `x 44%` orange | It took the heat first |
+| `- 38%` grey | Neither, by the 17:00 New York cap |
+
+Where a bar both takes the heat and closes back inside, it counts as heat. Five-minute bars
+cannot say which came first, so the tie goes against the trader — the same rule the model was
+trained on.
+
+### The table
+
+Expected values on MGC 5m over 2018-01-01 to 2025-10-17, for the default question (come back
+0.50 ATR before 1.00 ATR of heat), computed ahead of time by
+`scripts/pattern_arrays_arrayb_pine_simulate.py`:
+
+| Model score | Sweeps | Came back | Hit rate |
+|---|---|---|---|
+| 0–20% | 1,431 | 545 | 38% |
+| 20–40% | 21,646 | 8,741 | 40% |
+| 40–60% | 102,976 | 54,858 | 53% |
+| 60–80% | 73,621 | 54,287 | 74% |
+| 80–100% | 9,444 | 8,458 | 90% |
+| All | 209,118 | 126,889 | 61% |
+
+Your chart will differ a little: TradingView's continuous contract is not stitched the way the
+research data is, and the script holds a capped number of candidates in memory.
+
+**This table is in-sample** — the weights were fitted on this data. It confirms the indicator
+computes the model faithfully; it is not evidence that the model predicts. That evidence is the
+walk-forward in [`../RESULTS_ARRAY_B.md`](../RESULTS_ARRAY_B.md).
+
+### One caveat worth knowing before you trust the score
+
+Almost all of this model's ranking comes from a single measurement: how far back inside the level
+the sweep bar itself closed. The full twenty-input model scores AUC 0.673 out of sample; that one
+measurement alone scores 0.671. Part of its power is simply that a bar which already closed back
+inside starts nearer the target. The score is not reading anything subtle about swing quality —
+there was nothing subtle to read.

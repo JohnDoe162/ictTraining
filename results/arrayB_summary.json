@@ -1,0 +1,109 @@
+{
+  "pooled": {
+    "n_rows": 4862970,
+    "base_rate": 0.5769891650575677,
+    "log_loss": 0.5928444698211877,
+    "log_loss_ref": 0.6309981002943272,
+    "brier": 0.2037153215089166,
+    "brier_ref": 0.22048088989483144,
+    "brier_skill": 0.07604091399445978,
+    "log_loss_skill": 0.060465523517967634,
+    "episodes": 162099,
+    "mean_cell_lift": 1.4986911855144482,
+    "monotone_share": 1.0,
+    "auc_within_cells": 0.6725380097062807,
+    "positive_window_share": 1.0
+  },
+  "verdict": {
+    "V1_ranking": true,
+    "V2_brier_skill": true,
+    "V3_consistency": true,
+    "V4_monotone": true,
+    "PASS": true
+  },
+  "thresholds": {
+    "min_episodes_total": 500,
+    "min_episodes_per_year": 50,
+    "top_decile_lift": 1.2,
+    "min_brier_skill": 0.0,
+    "min_positive_window_share": 0.5,
+    "min_monotone_share": 0.99
+  },
+  "gate": {
+    "episodes_total": 197202,
+    "min_episodes_total": 500,
+    "worst_year": 21368,
+    "min_episodes_per_year": 50,
+    "pass": true
+  },
+  "windows": 13,
+  "windows_skipped": 0,
+  "coefs_last_window": [
+    0.39246016858552674,
+    0.17466727790909936,
+    -0.039809179933851246,
+    0.7374798912175591,
+    0.013980869656163273,
+    -0.004550884691651653,
+    -0.009750424571494292,
+    0.000261895377337875,
+    0.009266914290452767,
+    0.034528747375683164,
+    -0.03135806924381979,
+    0.03292849546058349,
+    0.0022766743665411228,
+    0.02500994254292523,
+    0.2593510191439578,
+    -0.08379874844369468,
+    0.1512191884943147,
+    0.1489419410827237,
+    0.17583875905081817,
+    -0.4249345619181827,
+    0.6141106154272632
+  ],
+  "features": [
+    "intercept",
+    "sweep_depth_atr",
+    "sweep_depth_ticks",
+    "close_back_frac",
+    "sweep_bar_range_atr",
+    "left_strength",
+    "prominence_atr",
+    "age_bars",
+    "tests_held",
+    "atr_norm",
+    "rvol_sweep",
+    "room_to_opposite_atr",
+    "level_rank_session",
+    "range_pos",
+    "minutes_to_cap",
+    "side",
+    "bucket_london",
+    "bucket_ny_am",
+    "bucket_ny_pm",
+    "x_atr",
+    "y_atr"
+  ],
+  "grid": {
+    "x": [
+      0.1,
+      0.25,
+      0.5,
+      0.75,
+      1.0,
+      1.5
+    ],
+    "y": [
+      0.25,
+      0.5,
+      1.0,
+      2.0,
+      4.0
+    ]
+  },
+  "data": {
+    "start": "2018-01-01",
+    "end": "2025-10-17",
+    "built": "2026-11-16"
+  }
+}

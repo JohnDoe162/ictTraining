@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from pattern_arrays_pine_parity import build_rows_pine  # noqa: E402
 
+from pattern_arrays.data import load_bars  # noqa: E402
 from pattern_arrays.dol import (  # noqa: E402
     RANGE_BARS,
     RETIRE_SESSIONS,
@@ -36,7 +37,7 @@ from pattern_arrays.dol import (  # noqa: E402
 
 START, END = "2018-01-01", "2025-10-17"
 OUT = ROOT / "results"
-BARS = os.environ.get("MGC_BARS", "")  # path to your own 1-minute bars
+BARS = os.environ.get("MGC_BARS", "")  # path to your own 1-minute bars; see src/pattern_arrays/data.py
 MODEL = json.loads((OUT / "arrayA_model_pine.json").read_text())
 TICK = 0.10
 EPS = TICK * 0.01
@@ -226,6 +227,8 @@ def simulate(bars: pd.DataFrame) -> dict:
 
 
 def main() -> int:
+    if not BARS:
+        raise SystemExit("Set MGC_BARS to a Parquet or CSV of 1-minute bars (see src/pattern_arrays/data.py).")
     bars = resample_1h(load_bars(BARS, START, END))
     sim = simulate(bars)
     r = sim["rows"]

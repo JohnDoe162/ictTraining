@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from pattern_arrays import dol, walkforward  # noqa: E402
+from pattern_arrays.data import load_bars  # noqa: E402
 from pattern_arrays.dol import (  # noqa: E402
     EPS,
     RANGE_BARS,
@@ -36,7 +37,7 @@ from pattern_arrays.dol import (  # noqa: E402
 START = "2018-01-01"
 END = "2025-10-17"
 OUT = ROOT / "results"
-BARS = os.environ.get("MGC_BARS", "")  # path to your own 1-minute bars
+BARS = os.environ.get("MGC_BARS", "")  # path to your own 1-minute bars; see src/pattern_arrays/data.py
 
 
 def build_rows_pine(bars: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -160,6 +161,8 @@ def build_rows_pine(bars: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 
 def main() -> int:
+    if not BARS:
+        raise SystemExit("Set MGC_BARS to a Parquet or CSV of 1-minute bars (see src/pattern_arrays/data.py).")
     df1m = load_bars(BARS, START, END)
     bars = resample_1h(df1m)
     rows_p, counts_p = build_rows_pine(bars)

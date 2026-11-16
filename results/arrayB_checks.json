@@ -1,0 +1,22 @@
+{
+  "correlation_cross_check": {
+    "all_episodes": {
+      "episodes": 162099,
+      "mean_cell_lift": 1.4986911855144482,
+      "auc_within_cells": 0.6725380097062807,
+      "brier_skill": 0.07604091399445978
+    },
+    "first_episode_per_session": {
+      "episodes": 1530,
+      "mean_cell_lift": 1.3462396831409955,
+      "auc_within_cells": 0.7414612917846514,
+      "brier_skill": 0.20036647307353528
+    }
+  },
+  "ranking_power_auc": {
+    "model": 0.6725380097062807,
+    "close_back_frac": 0.6712127626759391,
+    "minutes_to_cap": 0.5260090544919431,
+    "sweep_depth_atr": 0.4247050143232945
+  }
+}

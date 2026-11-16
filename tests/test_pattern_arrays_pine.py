@@ -1,8 +1,12 @@
-"""The TradingView indicator must carry exactly the fitted model, and compute it correctly.
+"""The TradingView indicators must carry exactly the fitted models, and compute them correctly.
 
-tradingview/dol_model_mgc.pine hardcodes the model's weights because Pine cannot read a file.
-If the model is ever refitted and the .pine is not updated, the chart would silently show a
-different model from the research. These tests make that impossible to miss.
+Pine cannot read a file, so each indicator hardcodes its model's weights. If a model is refitted
+and the .pine is not regenerated, the chart would silently show a different model from the
+research. These tests make that impossible to miss, and the structural checks below run against
+every indicator in the project.
+
+  tradingview/dol_model_mgc.pine    - Array A, 1h draw on liquidity, 12 features
+  tradingview/sweep_model_mgc.pine  - Array B, 5m sweep and reversal, 20 features
 """
 
 from __future__ import annotations
@@ -15,30 +19,38 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PINE = ROOT / "tradingview" / "dol_model_mgc.pine"
-MODEL_JSON = ROOT / "model" / "arrayA_model_pine.json"
+MODELS = ROOT / "model"
+INDICATORS = {
+    "arrayA": (ROOT / "tradingview" / "dol_model_mgc.pine", MODELS / "arrayA_model_pine.json", 12),
+    "arrayB": (ROOT / "tradingview" / "sweep_model_mgc.pine", MODELS / "arrayB_model_pine.json", 20),
+}
+PRESENT = [k for k, (pine, model, _) in INDICATORS.items() if pine.exists() and model.exists()]
 
-pytestmark = pytest.mark.skipif(
-    not (PINE.exists() and MODEL_JSON.exists()), reason="indicator or fitted model not present"
-)
+pytestmark = pytest.mark.skipif(not PRESENT, reason="no indicator with a fitted model is present")
 
 
-def pine_constants() -> dict[str, float]:
-    text = PINE.read_text(encoding="utf-8")
+def pytest_generate_tests(metafunc):  # pragma: no cover - collection hook
+    if "name" in metafunc.fixturenames:
+        metafunc.parametrize("name", PRESENT)
+
+
+def pine_constants(pine: Path) -> dict[str, float]:
+    text = pine.read_text(encoding="utf-8")
     out = {}
     for name, val in re.findall(r"^([CWMS]_\d{2}|C_INT)\s*=\s*(-?\d+\.\d+)\s*$", text, re.M):
         out[name] = float(val)
     return out
 
 
-def test_pine_weights_match_the_fitted_model():
+def test_pine_weights_match_the_fitted_model(name):
     """The .pine carries each number rounded to 6 decimals, so the tolerance is one unit in
     that last place. Anything looser would let a genuinely different model through."""
-    model = json.loads(MODEL_JSON.read_text())
-    k = pine_constants()
+    pine, model_json, n_feat = INDICATORS[name]
+    model = json.loads(model_json.read_text())
+    k = pine_constants(pine)
     tol = 1e-6
     assert k["C_INT"] == pytest.approx(model["intercept"], abs=tol), "intercept drifted"
-    assert len(model["features"]) == 12, "the .pine hardcodes exactly 12 features"
+    assert len(model["features"]) == n_feat, f"{name}: the .pine hardcodes exactly {n_feat} features"
     for i, feat in enumerate(model["features"], start=1):
         tag = f"{i:02d}"
         assert k[f"W_{tag}"] == pytest.approx(model["coef"][i - 1], abs=tol), f"{feat} weight drifted"
@@ -46,16 +58,17 @@ def test_pine_weights_match_the_fitted_model():
         assert k[f"S_{tag}"] == pytest.approx(model["std"][i - 1], abs=tol), f"{feat} sd drifted"
 
 
-def test_rounding_to_six_decimals_cannot_move_a_score():
+def test_rounding_to_six_decimals_cannot_move_a_score(name):
     """Rounding the published constants must not change what the chart shows. Worst case over
     the feature ranges actually seen in training (mean +/- 4 sd), the score moves < 0.1%."""
-    model = json.loads(MODEL_JSON.read_text())
-    k = pine_constants()
+    pine, model_json, n_feat = INDICATORS[name]
+    model = json.loads(model_json.read_text())
+    k = pine_constants(pine)
     worst = 0.0
     for sign in (-4.0, 4.0):
         z_full = model["intercept"]
         z_pine = k["C_INT"]
-        for i in range(1, 13):
+        for i in range(1, n_feat + 1):
             tag = f"{i:02d}"
             x = model["mean"][i - 1] + sign * model["std"][i - 1]
             z_full += model["coef"][i - 1] * (x - model["mean"][i - 1]) / model["std"][i - 1]
@@ -63,38 +76,48 @@ def test_rounding_to_six_decimals_cannot_move_a_score():
         p_full = 1.0 / (1.0 + math.exp(-z_full))
         p_pine = 1.0 / (1.0 + math.exp(-z_pine))
         worst = max(worst, abs(p_full - p_pine))
-    assert worst < 0.001, f"rounding moves the score by {worst:.6f}"
+    assert worst < 0.001, f"{name}: rounding moves the score by {worst:.6f}"
 
 
-def test_pine_scoring_arithmetic_known_answer():
+def test_pine_scoring_arithmetic_known_answer(name):
     """Hand-worked: feed every feature its own training mean. Each standardised term is then
-    exactly 0, so the score must be the logistic function of the intercept alone."""
-    model = json.loads(MODEL_JSON.read_text())
+    exactly 0, so the score must be the logistic function of the intercept alone, and that must
+    sit beside the base rate the model was fitted on."""
+    _, model_json, _ = INDICATORS[name]
+    model = json.loads(model_json.read_text())
     z = model["intercept"]
     for w, m, s in zip(model["coef"], model["mean"], model["std"]):
         z += w * (m - m) / s
     assert z == pytest.approx(model["intercept"], abs=1e-12)
     p = 1.0 / (1.0 + math.exp(-z))
-    # intercept 0.063218 -> 1/(1+e^-0.063218) = 0.515798...
-    assert p == pytest.approx(0.5158, abs=1e-4)
-    # and that sits sensibly beside the base rate the model was fitted on
+    assert p == pytest.approx(1.0 / (1.0 + math.exp(-model["intercept"])), abs=1e-12)
     assert abs(p - model["base_rate"]) < 0.05
 
 
-def test_pine_declares_the_rules_the_owner_fixed():
-    """The label rules are the owner's, not the model's: 1-hour bars, trade-through by one
-    tick, and the session cap. They must be stated in the file the owner reads."""
-    text = PINE.read_text(encoding="utf-8").lower()
-    assert "1-hour" in text and 'timeframe.period != "60"' in text.lower()
+def test_pine_declares_the_rules_the_owner_fixed(name):
+    """The label rules are the owner's, not the model's. They must be stated in the file the
+    owner reads, together with the timeframe guard that keeps the model on the bars it was
+    trained on."""
+    pine, _, _ = INDICATORS[name]
+    text = pine.read_text(encoding="utf-8").lower()
     assert "traded through" in text
     assert "at least one tick" in text or "at least 1 tick" in text
     assert "not a trade signal" in text
+    if name == "arrayA":
+        assert "1-hour" in text and 'timeframe.period != "60"' in text
+        assert "session cap" in text or "17:00" in text
+    if name == "arrayB":
+        assert "5-minute" in text and 'timeframe.period != "5"' in text
+        assert "17:00" in text
+        # the one honest caveat the owner must not lose: the model is close to one measurement
+        assert "0.671" in text and "0.673" in text
 
 
-def test_pine_has_no_lookahead_markers():
+def test_pine_has_no_lookahead_markers(name):
     """Pine repaints if it requests a higher timeframe with lookahead on. The indicator must
     not use request.security at all: it reads only the chart's own closed bars."""
-    text = PINE.read_text(encoding="utf-8")
+    pine, _, _ = INDICATORS[name]
+    text = pine.read_text(encoding="utf-8")
     assert "request.security" not in text
     assert "lookahead_on" not in text
     assert "barmerge.lookahead_on" not in text
@@ -133,8 +156,9 @@ def _branch_last(lines: list[str], start: int, base: int) -> str | None:
     return last
 
 
-def test_pine_if_else_branches_return_the_same_type():
-    lines = PINE.read_text(encoding="utf-8").split("\n")
+def test_pine_if_else_branches_return_the_same_type(name):
+    pine, _, _ = INDICATORS[name]
+    lines = pine.read_text(encoding="utf-8").split("\n")
     problems = []
     for i, line in enumerate(lines):
         st = line.strip()
@@ -173,30 +197,33 @@ def _logical_lines(text: str) -> list[str]:
     return out
 
 
-def test_every_table_cell_has_an_opaque_background():
+def test_every_table_cell_has_an_opaque_background(name):
     """The owner hit an unreadable table on the dark theme: cells with no background let the
     chart show through and dark text vanished. Every cell must set one."""
+    pine, _, _ = INDICATORS[name]
     missing = [
         ln
-        for ln in _logical_lines(PINE.read_text(encoding="utf-8"))
+        for ln in _logical_lines(pine.read_text(encoding="utf-8"))
         if ln.startswith("table.cell(") and "bgcolor" not in ln
     ]
     assert not missing, "table cells without a background:\n" + "\n".join(missing)
 
 
-def test_colours_adapt_to_the_chart_theme():
+def test_colours_adapt_to_the_chart_theme(name):
     """Light and dark must be two selected palettes, chosen at runtime, not one hardcoded set."""
-    text = PINE.read_text(encoding="utf-8")
+    pine, _, _ = INDICATORS[name]
+    text = pine.read_text(encoding="utf-8")
     assert "chart.bg_color" in text, "theme is not detected from the chart background"
     assert "isDark" in text
     for name in ("C_INK", "C_INK2", "C_SURFACE", "C_HEAD", "C_HIGH"):
         assert re.search(rf"^{name}\s*=\s*isDark \?", text, re.M), f"{name} does not switch on theme"
 
 
-def test_drawings_are_forced_onto_the_price_pane():
+def test_drawings_are_forced_onto_the_price_pane(name):
     """overlay=true alone did not stop TradingView putting the script in its own pane, so the
     drawings themselves must name the price pane."""
-    text = PINE.read_text(encoding="utf-8")
+    pine, _, _ = INDICATORS[name]
+    text = pine.read_text(encoding="utf-8")
     assert re.search(r"indicator\(.*overlay\s*=\s*true", text, re.S), "indicator is not overlay"
     for ln in _logical_lines(text):
         if ln.startswith("c.ln := line.new(") or ln.startswith("c.lb := label.new("):
